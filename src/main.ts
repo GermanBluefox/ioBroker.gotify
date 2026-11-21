@@ -14,6 +14,24 @@ interface GotifyMessage {
     token?: string;
 }
 
+/** `message.send` of the shared catalog of ioBroker.assistant (HELP.md), plus the fields of GotifyMessage */
+interface StandardMessage extends Omit<GotifyMessage, 'priority'> {
+    text?: unknown;
+    recipient?: unknown;
+    file?: unknown;
+    files?: unknown;
+    priority?: unknown;
+}
+
+/** Why a message was not sent, for the answer of the catalog form */
+interface SendFailure {
+    error?: string;
+    reason?: string;
+}
+
+/** Priority of an urgent message (`priority: true`): in the Android app with sound and vibration */
+const URGENT_PRIORITY = 8;
+
 class Gotify extends utils.Adapter {
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
@@ -91,16 +109,75 @@ class Gotify extends utils.Adapter {
             }
             return;
         }
-        if (typeof obj === 'object' && obj.message) {
-            if (obj.command === 'send') {
-                const sent = await this.sendMessage(obj.message as GotifyMessage);
-                if (obj.callback) {
-                    this.sendTo(obj.from, obj.command, { sent }, obj.callback);
-                }
-            } else if (obj.command === 'sendNotification') {
-                await this.processNotification(obj);
-            }
+        if (typeof obj !== 'object' || !obj) {
+            return;
         }
+        const reply = (answer: Record<string, unknown>): void => {
+            if (obj.callback) {
+                this.sendTo(obj.from, obj.command, answer, obj.callback);
+            }
+        };
+        if (!obj.message) {
+            reply({ error: 'No message given', reason: 'BAD_REQUEST' });
+            return;
+        }
+        if (obj.command === 'send') {
+            const message = obj.message as StandardMessage;
+            if (message.message === undefined && message.text !== undefined) {
+                // message.send of the shared catalog: {text, title?, priority?}, answers {ok, sent} or {error, reason}
+                reply(await this.sendStandard(message));
+                return;
+            }
+            const sent = await this.sendMessage(obj.message as GotifyMessage);
+            reply({ sent });
+        } else if (obj.command === 'sendNotification') {
+            await this.processNotification(obj);
+        } else {
+            reply({ error: `Unknown command: ${obj.command}`, reason: 'NOT_SUPPORTED' });
+        }
+    }
+
+    /**
+     * `send` in the form of the shared catalog (`message.send {text, recipient?, title?, file?, files?, priority?}`)
+     *
+     * @param request the message of the caller
+     */
+    private async sendStandard(request: StandardMessage): Promise<Record<string, unknown>> {
+        if (request.file || request.files) {
+            return { error: 'Gotify sends only text, no files', reason: 'NOT_SUPPORTED' };
+        }
+        if (request.recipient !== undefined && request.recipient !== null && request.recipient !== '') {
+            return {
+                error: 'Gotify has no recipients: every message goes to the Gotify user of the application',
+                reason: 'NOT_SUPPORTED',
+            };
+        }
+        const text = typeof request.text === 'string' || typeof request.text === 'number' ? String(request.text) : '';
+        if (!text) {
+            return { error: 'No text given', reason: 'BAD_REQUEST' };
+        }
+        const failure: SendFailure = {};
+        const sent = await this.sendMessage(
+            {
+                message: text,
+                title: request.title,
+                priority:
+                    request.priority === true
+                        ? URGENT_PRIORITY
+                        : typeof request.priority === 'number'
+                          ? request.priority
+                          : undefined,
+                contentType: request.contentType,
+                token: request.token,
+            },
+            failure,
+        );
+        if (sent) {
+            return { ok: true, sent: 1 };
+        }
+        return failure.reason
+            ? { error: failure.error || 'Not sent', reason: failure.reason }
+            : { error: failure.error || 'Not sent' };
     }
 
     private async processNotification(obj: ioBroker.Message): Promise<void> {
@@ -149,7 +226,7 @@ class Gotify extends utils.Adapter {
         }
     }
 
-    private async sendMessage(message: GotifyMessage): Promise<boolean> {
+    private async sendMessage(message: GotifyMessage, failure?: SendFailure): Promise<boolean> {
         const token = message.token || this.config.token;
         if (this.config.url && token) {
             try {
@@ -180,14 +257,37 @@ class Gotify extends utils.Adapter {
                 await this.setState('info.connection', false, true);
                 await this.setState('info.lastError', errorMessage, true);
                 this.log.error(`Error while sending message to gotify: ${errorMessage}`);
+                if (failure) {
+                    failure.error = errorMessage;
+                    failure.reason = this.getErrorReason(error);
+                }
                 return false;
             }
         } else {
             await this.setState('info.connection', false, true);
             await this.setState('info.lastError', 'Gotify is not configured', true);
             this.log.error('Cannot send notification while Gotify is not configured');
+            if (failure) {
+                failure.error = 'Gotify is not configured';
+                failure.reason = 'NOT_CONFIGURED';
+            }
             return false;
         }
+    }
+
+    /**
+     * The reason code of the shared catalog for a failed request
+     *
+     * @param error the error of axios
+     */
+    private getErrorReason(error: unknown): string | undefined {
+        if (!axios.isAxiosError(error)) {
+            return undefined;
+        }
+        if (error.response) {
+            return error.response.status === 401 || error.response.status === 403 ? 'NOT_ALLOWED' : undefined;
+        }
+        return error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' ? 'TIMEOUT' : 'NOT_CONNECTED';
     }
 
     private getSafeErrorMessage(error: unknown): string {

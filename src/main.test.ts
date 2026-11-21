@@ -136,6 +136,60 @@ describe('Gotify adapter', () => {
         }
     });
 
+    it('marks send as message.send of the shared catalog', () => {
+        const marks = Object.fromEntries(COMMANDS.filter(c => c.standard).map(c => [c.command, c.standard]));
+
+        expect(marks).to.deep.equal({ send: 'message.send' });
+        expect(HELP).to.include('message.send');
+    });
+
+    it('sends the catalog form {text, title, priority} and answers {ok, sent}', async () => {
+        const adapter = createAdapter();
+
+        await adapter.onMessage({
+            command: 'send',
+            message: { text: 'Door open', title: 'Alarm', priority: true },
+            from: 'assistant.0',
+            callback: 1,
+        });
+
+        expect(axiosPostStub.firstCall.args[1]).to.deep.include({ message: 'Door open', title: 'Alarm', priority: 8 });
+        expect(adapter.sendTo.firstCall.args[2]).to.deep.equal({ ok: true, sent: 1 });
+    });
+
+    it('answers the catalog form with error and reason', async () => {
+        const adapter = createAdapter();
+        axiosPostStub.rejects({ isAxiosError: true, response: { status: 401 } });
+        const ask = async (message: Record<string, unknown>): Promise<any> => {
+            adapter.sendTo.resetHistory();
+            await adapter.onMessage({ command: 'send', message, from: 'assistant.0', callback: 1 });
+            return adapter.sendTo.firstCall.args[2];
+        };
+
+        expect(await ask({ text: 'Hello' })).to.deep.equal({ error: 'HTTP 401', reason: 'NOT_ALLOWED' });
+        expect((await ask({ text: 'Hello', recipient: 'Anna' })).reason).to.equal('NOT_SUPPORTED');
+        expect((await ask({ text: 'Hello', file: 'data:image/png;base64,AAAA' })).reason).to.equal('NOT_SUPPORTED');
+        expect((await ask({ text: '' })).reason).to.equal('BAD_REQUEST');
+        expect(axiosPostStub.callCount).to.equal(1);
+
+        const unconfigured = createAdapter({ config: { url: '', token: '' } });
+        await unconfigured.onMessage({ command: 'send', message: { text: 'Hello' }, from: 'assistant.0', callback: 1 });
+        expect(unconfigured.sendTo.firstCall.args[2]).to.deep.equal({
+            error: 'Gotify is not configured',
+            reason: 'NOT_CONFIGURED',
+        });
+    });
+
+    it('keeps the answer {sent} of the old form and answers unknown commands', async () => {
+        const adapter = createAdapter();
+
+        await adapter.onMessage({ command: 'send', message: { message: 'Hello' }, from: 'javascript.0', callback: 1 });
+        await adapter.onMessage({ command: 'foo', message: {}, from: 'javascript.0', callback: 1 });
+
+        expect(adapter.sendTo.firstCall.args[2]).to.deep.equal({ sent: true });
+        expect(adapter.sendTo.secondCall.args[2]).to.deep.include({ reason: 'NOT_SUPPORTED' });
+    });
+
     it('checks server availability without logging the configured token', async () => {
         const adapter = createAdapter();
 

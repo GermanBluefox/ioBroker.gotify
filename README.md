@@ -24,6 +24,7 @@ Send push notifications from [ioBroker](https://iobroker.net/) to [Gotify](https
 ### **WORK IN PROGRESS**
 
 - (@GermanBluefox) Added the message "help": a description of all messages for AI agents (e.g. pi-agent), and common.supportedMessages.help
+- (@GermanBluefox) Added the standard commands of the shared catalog: message.send (send with text answers {ok, sent} or {error, reason}); unknown commands get an answer
 
 ### 0.6.1 (2026-10-25)
 
@@ -110,6 +111,10 @@ sendTo('gotify.0', 'send', {
 `sendTo('gotify.0', 'help', {})` answers `{ help, commands }`: `help` describes the commands with their parameters
 in English, for AI agents (e.g. ioBroker.pi-agent) and script authors; `commands` lists every command with `write`
 (`true` when it sends something).
+
+`send` with `text` instead of `message` follows the shared catalog of message commands (`message.send`):
+`sendTo('gotify.0', 'send', { text, title?, priority? })` (`priority: true` = 8) answers `{ ok: true, sent: 1 }` or
+`{ error, reason }`. With `message`, `send` answers `{ sent: true | false }` as before.
 
 ## Communication
 
